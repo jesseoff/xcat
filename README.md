@@ -54,3 +54,40 @@ is to first synchronize time via NTP, then have all boards pause before download
 and synchronize continuation to the 0 second of the next minute. Since most
 boards write their SSDs at the same rate, it is likely boards remain in lock
 step throughout while consuming the stdout stream.
+
+## Usage
+
+The XCAT server is started from the function `(xcat:xcatd
+"/u/x/var/ts-production/images")` If no directory argument is used the default
+is the Lisp home directory as returned by `(user-homedir-pathname)` All XCAT
+requests are attempted served from the file tree named by this argument.  If
+a broadcasted request is received for a file that is not present, the server
+
+```lisp
+;; Start the xcatd server and listen for broadcasted requests for files 
+;; rooted from the user homedir:
+(xcat:xcatd)
+
+;; ...similar, but from a named root directory
+(xcat:xcatd "/u/x/var/ts-production/images")
+```
+
+To use the client mode and broadcast for downloading a requested file, there
+are three methods:
+
+```lisp
+;; Form 1, Output to a stream
+(xcat:xcat "ts7000/flash.dd" *standard-output*)
+
+;; Form 2, Output to a file/pathname
+(xcat:xcat "ts7000/flash.tgz" #P"/tmp/flash.tgz")
+
+;; Form 3, Output via callbacks
+(xcat:xcat "ts7000/flash.gz" #'some-decompressor-callback-fn)
+```
+
+The function callback gets sent `simple-array (unsigned-byte 8) (*)` as its
+single argument.
+
+The broadcast IP defaults to 255.255.255.255 but can be changed by setting the
+global `xcat:*xcat-broadcast-ip*`

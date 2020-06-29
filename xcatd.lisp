@@ -73,7 +73,7 @@ first is the reply header w/checksum, second is the file chunk."
 (defvar *xcat-prev-chunks* nil)
 (defvar *xcat-chunks* (tg:make-weak-hash-table :test #'equal :weakness :value))
 (defvar *xcat-lock* (bt:make-lock))
-(defparameter *xcat-broadcast-ip* "10.37.129.255")
+(defparameter *xcat-broadcast-ip* "255.255.255.255")
 
 (defun net-read-chunk (xcat-req-string)
   "Broadcasts requests for files via XCAT. Returns cons of two octet vectors-- car is the resp
