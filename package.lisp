@@ -1,5 +1,7 @@
 ;;;; package.lisp
 
 (defpackage #:xcat
-  (:use #:cl #:usocket #:split-sequence #:flexi-streams)
-  (:export #:xcatd))
+  (:use #:cl #:usocket #:flexi-streams)
+  (:export #:xcatd
+           #:xcat
+           #:*xcat-broadcast-ip*))
