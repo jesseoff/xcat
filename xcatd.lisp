@@ -3,7 +3,7 @@
 (in-package :xcat)
 
 (defvar *xcatd-directory*)
-(defvar *xcatd-nxfrs* 0)
+(defvar *xcatd-remotes* nil)
 (declaim (type fixnum *xcatd-nxfrs*))
 (defvar *xcatd-lock* (bt:make-lock))
 (defconstant +xcatd-xfr-timeout-sec+ 16) ;1Mbyte/sec min transfer rate
@@ -26,8 +26,8 @@
          else return i))
 
 (defun file-read-chunk (xcat-req-string)      ;req strings are of the form "<file-name>@<chunk number>"
-  "Reads 16Mbyte chunk. Stores result in a weak hash table. Returns a cons of two octet vectors--
-first is the reply header w/checksum, second is the file chunk."
+  "Reads 16Mbyte chunk. Stores result in a weak hash table for cacheing. Returns a cons of two octet
+vectors-- first is the reply header w/checksum, second is the file chunk."
   (let* ((val (gethash xcat-req-string *xcatd-chunks*)))
     (when val (return-from file-read-chunk val))
     (let* ((msg (cl-ppcre:split "@" xcat-req-string))
@@ -48,18 +48,26 @@ first is the reply header w/checksum, second is the file chunk."
                   (adjust-array filebuf len))))))
 
 (defun xcatd-broadcast-handler (buf)
-  (when (bt:with-lock-held (*xcatd-lock*) (> +xcatd-max-xfrs+ *xcatd-nxfrs*))
-    (log-errors
-      (let* ((resp (file-read-chunk (octets-to-string buf :external-format :utf-8)))
-             (remote *remote-host*))
-        (bt:make-thread
-         (lambda ()
-           (bt:with-lock-held (*xcatd-lock*) (incf *xcatd-nxfrs*))
-           (log-errors (bt:with-timeout (+xcatd-xfr-timeout-sec+)
-                         (with-client-socket (sk s remote 19023 :element-type '(unsigned-byte 8))
-                           (write-sequence (car resp) s)
-                           (write-sequence (cdr resp) s))))
-           (bt:with-lock-held (*xcatd-lock*) (decf *xcatd-nxfrs*)))))))
+  (bt:with-lock-held (*xcatd-lock*)
+    (loop
+      for r in *xcatd-remotes*
+      for n from 0
+      when (or (>= n +xcatd-max-xfrs+) (not (mismatch r *remote-host*)))
+        do (return-from xcatd-broadcast-handler nil)))
+  (log-errors
+    (let* ((resp (file-read-chunk (octets-to-string buf :external-format :utf-8)))
+           (remote *remote-host*))
+      (bt:make-thread
+       (lambda ()
+         (bt:with-lock-held (*xcatd-lock*) (push remote *xcatd-remotes*))
+         (log-errors (bt:with-timeout (+xcatd-xfr-timeout-sec+)
+                          (with-client-socket (sk s remote 19023 :element-type '(unsigned-byte 8))
+                            (write-sequence (car resp) s)
+                            (write-sequence (cdr resp) s)
+                            (finish-output s))))
+         (bt:with-lock-held (*xcatd-lock*)
+           (setf *xcatd-remotes* (delete remote *xcatd-remotes*
+                                         :test (lambda (x y) (not (mismatch x y))))))))))
   nil)
 
 (defun xcatd (&optional root)
@@ -90,13 +98,14 @@ header, cdr is the verified datablock."
            (progn
              (setf udp-broadcast-sk (socket-connect nil nil :protocol :datagram)
                    (socket-option udp-broadcast-sk :broadcast) t
-                   tcp-listen-sk (socket-listen *wildcard-host* 19023 :reuse-address t :backlog 1))
+                   tcp-listen-sk (socket-listen *wildcard-host* 19023 :reuse-address t :backlog 1
+                                                :element-type '(unsigned-byte 8)))
              (loop
                do (socket-send udp-broadcast-sk buf (length buf) :host *xcat-broadcast-ip* :port 19023)
                   (loop while (wait-for-input tcp-listen-sk :timeout 1/10 :ready-only t)
                         do (log-errors
                              (bt:with-timeout (3)
-                               (setf insk (socket-accept tcp-listen-sk :element-type '(unsigned-byte 8))
+                               (setf insk (socket-accept tcp-listen-sk)
                                      instream (socket-stream insk)
                                      readlen (read-sequence resp instream))))
                         while (or (/= (length resp) readlen)
@@ -174,7 +183,8 @@ header, cdr is the verified datablock."
                      (bt:with-timeout (+xcatd-xfr-timeout-sec+)
                        (with-client-socket (sk s remote 19023 :element-type '(unsigned-byte 8))
                          (write-sequence (car chunk) s)
-                         (write-sequence (cdr chunk) s)))))))))))
+                         (write-sequence (cdr chunk) s)
+                         (finish-output s)))))))))))
   nil)
 
 (defgeneric xcat (path output))
