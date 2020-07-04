@@ -1,3 +1,4 @@
+
 # xcat
 xcat is a simple mechanism for mass distributing big files on LANs. It was
 developed for simultaneously imaging multiple embedded board's SSDs while on a
@@ -62,6 +63,7 @@ The XCAT server is started from the function `(xcat:xcatd
 is the Lisp home directory as returned by `(user-homedir-pathname)` All XCAT
 requests are attempted served from the file tree named by this argument.  If
 a broadcasted request is received for a file that is not present, the server
+simply ignores the request.
 
 ```lisp
 ;; Start the xcatd server and listen for broadcasted requests for files 
@@ -91,3 +93,13 @@ single argument.
 
 The broadcast IP defaults to 255.255.255.255 but can be changed by setting the
 global `xcat:*xcat-broadcast-ip*`
+
+## UNIX command line interface
+
+Although this system establishes Lisp functions for using XCAT, it does not
+provide mechanism for using the functions within a shell script or the UNIX
+command line. For that, another quicklisp system `scriptl` is recommended. Use
+this system to establish a background running, daemonized, Lisp instance that is
+then communicated with by a portable C binary over Unix domain socket IPC. Both
+the `xcat` and `xcatd` functions maintain RAM caches and continually serve
+helpouts in the background.
