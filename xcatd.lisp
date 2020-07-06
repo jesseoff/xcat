@@ -70,9 +70,13 @@ vectors-- first is the reply header w/checksum, second is the file chunk."
                                          :test (lambda (x y) (not (mismatch x y))))))))))
   nil)
 
-(defun xcatd (&optional root)
-  (let ((*xcatd-directory* (if root (cl-fad:pathname-as-directory root) (user-homedir-pathname))))
-    (socket-server nil 19023 #'xcatd-broadcast-handler nil :protocol :datagram)))
+(defun xcatd (&key root background)
+  (if background
+      (bt:make-thread (lambda () (xcatd :root root)))
+      (let ((*xcatd-directory* (if root
+                                   (uiop/pathname:ensure-directory-pathname root)
+                                   (user-homedir-pathname))))
+        (socket-server nil 19023 #'xcatd-broadcast-handler nil :protocol :datagram))))
 
 (defvar *xcat-prefetcher-thread* nil)
 (defvar *xcat-helpout-thread* nil)
