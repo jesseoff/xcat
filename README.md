@@ -71,7 +71,7 @@ simply ignores the request.
 (xcat:xcatd)
 
 ;; ...similar, but from a named root directory
-(xcat:xcatd "/u/x/var/ts-production/images")
+(xcat:xcatd :root "/u/x/var/ts-production/images")
 ```
 
 To use the client mode and broadcast for downloading a requested file, there
