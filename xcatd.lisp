@@ -39,21 +39,26 @@
         for readlen = (read-sequence buf stream)
         while (plusp readlen)
         sum readlen into sz
-        if (/= readlen bufsz) 
+        if (/= readlen bufsz)
           collect (adjust-array buf readlen) into obufs
         else
           collect buf into obufs
         finally (return (values obufs sz))))
 
 (defun sum-bufs (bufs)
-  (loop for buf of-type (simple-array (unsigned-byte 8) (*)) in bufs sum (reduce #'+ buf)))
+  (declare (optimize (speed 3) (safety 0)))
+  (loop for buf in bufs
+        sum (the fixnum (loop
+              for b fixnum across (the (simple-array (unsigned-byte 8) (*)) buf)
+              sum b fixnum)) fixnum))
 
 (defun bufs-length (bufs)
   (loop for buf of-type (simple-array (unsigned-byte 8) (*)) in bufs sum (length buf)))
 
-(defun file-read-chunk (xcat-req-string)      ;req strings are of the form "<file-name>@<chunk number>"
-  "Reads 16Mbyte chunk. Stores result in a weak hash table for cacheing. Returns a cons of two octet
-vectors-- first is the reply header w/checksum, second is the file chunk."
+;;req strings are of the form "<file-name>@<chunk number>"
+(defun file-read-chunk (xcat-req-string)
+  "Reads 16Mbyte chunk. Stores result in a weak hash table for cacheing. Returns a list of octet
+vectors-- first is the reply header w/checksum, next are the file buf(s)."
   (let* ((val (gethash xcat-req-string *xcatd-chunks*)))
     (when val (return-from file-read-chunk val))
     (let* ((msg (cl-ppcre:split "@" xcat-req-string))
@@ -247,7 +252,7 @@ header, cdr is the verified datablock(s)."
   (finish-output out-stream))
 
 (defmethod xcat (path (out-file pathname))
-  (with-open-file (s out-file :direction :output
+  (with-open-file (s out-file :direction :output :if-does-not-exist :create
                               :element-type '(unsigned-byte 8) :if-exists :overwrite)
     (xcat path s)
     (finish-output s)))
