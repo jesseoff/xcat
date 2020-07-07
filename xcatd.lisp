@@ -4,7 +4,6 @@
 
 (defvar *xcatd-directory*)
 (defvar *xcatd-remotes* nil)
-(declaim (type fixnum *xcatd-nxfrs*))
 (defvar *xcatd-lock* (bt:make-lock))
 (defconstant +xcatd-xfr-timeout-sec+ 16) ;1Mbyte/sec min transfer rate
 (defconstant +xcatd-max-xfrs+ 10)
@@ -25,6 +24,33 @@
            (sleep 1/10)
          else return i))
 
+(defconstant +max-array-size+ #+:32-bit #x800000 #+:64-bit #x1000000)
+(defun make-bufs (nbytes)
+  "Makes list of arrays for when nbytes is greater than +max-array-size+"
+  (if (> nbytes +max-array-size+)
+      (nconc (make-bufs +max-array-size+)
+             (make-bufs (- nbytes +max-array-size+)))
+      (list (make-array nbytes :element-type '(unsigned-byte 8)))))
+
+(defun read-into (bufs stream)
+  "read-sequence into a list of bufs, returning multiple values of filled bufs and total size"
+  (loop for buf of-type (simple-array (unsigned-byte 8) (*)) in bufs
+        for bufsz = (length buf)
+        for readlen = (read-sequence buf stream)
+        while (plusp readlen)
+        sum readlen into sz
+        if (/= readlen bufsz) 
+          collect (adjust-array buf readlen) into obufs
+        else
+          collect buf into obufs
+        finally (return (values obufs sz))))
+
+(defun sum-bufs (bufs)
+  (loop for buf of-type (simple-array (unsigned-byte 8) (*)) in bufs sum (reduce #'+ buf)))
+
+(defun bufs-length (bufs)
+  (loop for buf of-type (simple-array (unsigned-byte 8) (*)) in bufs sum (length buf)))
+
 (defun file-read-chunk (xcat-req-string)      ;req strings are of the form "<file-name>@<chunk number>"
   "Reads 16Mbyte chunk. Stores result in a weak hash table for cacheing. Returns a cons of two octet
 vectors-- first is the reply header w/checksum, second is the file chunk."
@@ -35,17 +61,17 @@ vectors-- first is the reply header w/checksum, second is the file chunk."
            (fn-parts (cl-ppcre:all-matches-as-strings "[^/]+" (car msg)))
            (fn-dir (if (cdr fn-parts) (cons :relative (butlast fn-parts)) nil))
            (fn (make-pathname :directory fn-dir :name (car (last fn-parts))))
-           (filebuf (make-array #x1000000 :element-type '(unsigned-byte 8)))
+           (filebufs (make-bufs #x1000000))
            (sum 0) (len 0))
-      (declare (type (integer 0 #xff000000) sum) (type (integer 0 #x1000000) len)
-               (type (simple-array (unsigned-byte 8) (#x1000000)) filebuf))
+      (declare (type (integer 0 #xff000000) sum) (type (integer 0 #x1000000) len))
       (with-open-file (s (merge-pathnames fn *xcatd-directory*) :element-type '(unsigned-byte 8))
         (file-position s (* #x1000000 chunk))
-        (setf len (read-sequence filebuf s) sum (reduce #'+ filebuf)))
+        (multiple-value-bind (obufs sz) (read-into filebufs s)
+          (setf len sz filebufs obufs sum (sum-bufs obufs))))
       (setf (gethash xcat-req-string *xcatd-chunks*)
             (cons (string-to-octets (format nil "~a@~8,'0x~8,'0x" xcat-req-string sum len)
                                     :external-format :utf-8)
-                  (adjust-array filebuf len))))))
+                  filebufs)))))
 
 (defun xcatd-broadcast-handler (buf)
   (bt:with-lock-held (*xcatd-lock*)
@@ -62,8 +88,7 @@ vectors-- first is the reply header w/checksum, second is the file chunk."
          (bt:with-lock-held (*xcatd-lock*) (push remote *xcatd-remotes*))
          (log-errors (bt:with-timeout (+xcatd-xfr-timeout-sec+)
                           (with-client-socket (sk s remote 19023 :element-type '(unsigned-byte 8))
-                            (write-sequence (car resp) s)
-                            (write-sequence (cdr resp) s)
+                            (loop for buf in resp do (write-sequence buf s))
                             (finish-output s))))
          (bt:with-lock-held (*xcatd-lock*)
            (setf *xcatd-remotes* (delete remote *xcatd-remotes*
@@ -87,9 +112,10 @@ vectors-- first is the reply header w/checksum, second is the file chunk."
 (defvar *xcat-lock* (bt:make-lock))
 (defparameter *xcat-broadcast-ip* "255.255.255.255")
 
+
 (defun net-read-chunk (xcat-req-string)
   "Broadcasts requests for files via XCAT. Returns cons of two octet vectors-- car is the resp
-header, cdr is the verified datablock."
+header, cdr is the verified datablock(s)."
   (let ((buf (string-to-octets xcat-req-string :external-format :utf-8))
         (resp (make-array (+ 17 (length xcat-req-string))
                           :element-type '(unsigned-byte 8)
@@ -123,17 +149,22 @@ header, cdr is the verified datablock."
              (socket-close udp-broadcast-sk)
              (socket-close tcp-listen-sk)
              (setf udp-broadcast-sk nil tcp-listen-sk nil)
-             (let* ((sum (parse-integer (octets-to-string (subseq resp (1+ (length buf)) nbytes-idx)
-                                                          :external-format :utf-8) :radix 16))
-                    (nbytes (parse-integer (octets-to-string (subseq resp nbytes-idx)
-                                                             :external-format :utf-8) :radix 16))
-                    (buf (make-array (logand #x1ffffff nbytes) :element-type '(unsigned-byte 8))))
-               (bt:with-timeout (+xcatd-xfr-timeout-sec+) (setf readlen (read-sequence buf instream)))
+             (let* ((sum
+                      (parse-integer (octets-to-string (subseq resp (1+ (length buf)) nbytes-idx)
+                                                       :external-format :utf-8) :radix 16))
+                    (nbytes
+                      (parse-integer
+                       (octets-to-string (subseq resp nbytes-idx) :external-format :utf-8)
+                       :radix 16))
+                    (bufs (make-bufs nbytes)))
+               (bt:with-timeout (+xcatd-xfr-timeout-sec+)
+                 (multiple-value-bind (obufs sz) (read-into bufs instream)
+                   (setf readlen sz bufs obufs)))
                (socket-close insk)
                (setf insk nil)
                (unless (= readlen nbytes) (log:info readlen nbytes) (error "chunk early EOF"))
-               (unless (zerop (- sum (reduce #'+ buf))) (error "bad checksum"))
-               (cons resp buf)))
+               (unless (zerop (- sum (sum-bufs bufs))) (error "bad checksum"))
+               (cons resp bufs)))
         (when insk (socket-close insk))
         (when udp-broadcast-sk (socket-close udp-broadcast-sk))
         (when tcp-listen-sk (socket-close tcp-listen-sk))))))
@@ -201,12 +232,13 @@ header, cdr is the verified datablock."
   (loop
     for n from 0
     for chunk = (xcat-req (format nil "~a@~d" path n))
-    for buf = (cdr chunk)
-    unless (/= #x1000000 (length buf)) do
+    for bufs = (cdr chunk)
+    for bufsz = (bufs-length bufs)
+    unless (/= #x1000000 bufsz) do
       (xcat-prefetch (format nil "~a@~d" path (1+ n)))
-    if (plusp (length buf)) do
-      (funcall out-function buf)
-    until (/= #x1000000 (length buf))))
+    if (plusp bufsz) do
+      (mapc out-function bufs)
+    until (/= #x1000000 bufsz)))
 
 (defmethod xcat (path (out-stream stream))
   (xcat path (lambda (buf)
@@ -216,6 +248,6 @@ header, cdr is the verified datablock."
 
 (defmethod xcat (path (out-file pathname))
   (with-open-file (s out-file :direction :output
-                              :element-type '(unsigned-byte 8) :if-exists :supersede)
+                              :element-type '(unsigned-byte 8) :if-exists :overwrite)
     (xcat path s)
     (finish-output s)))
