@@ -74,7 +74,7 @@ vectors-- first is the reply header w/checksum, next are the file buf(s)."
         (multiple-value-bind (obufs sz) (read-into filebufs s)
           (setf len sz filebufs obufs sum (sum-bufs obufs))))
       (setf (gethash xcat-req-string *xcatd-chunks*)
-            (cons (string-to-octets (format nil "~a@~8,'0x~8,'0x" xcat-req-string sum len)
+            (cons (string-to-octets (format nil "~a@~a@~8,'0x~8,'0x" (car msg) chunk sum len)
                                     :external-format :utf-8)
                   filebufs)))))
 
