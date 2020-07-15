@@ -103,3 +103,29 @@ this system to establish a background running, daemonized, Lisp instance that is
 then communicated with by a portable C binary over Unix domain socket IPC. Both
 the `xcat` and `xcatd` functions maintain RAM caches and continually serve
 helpouts in the background.
+
+## Sample xcatd background server image
+
+To create a standalone image to be run on a server, the following Lisp script may 
+serve as an example in building one.  This creates a standalone daemonizing executable /tmp/xcatd for 
+root directory /u/x/var/ts-production/images that logs to /tmp/log.txt
+and also starts background threads serving [scriptl](http://github.com/rpav/ScriptL) and
+[zyredir](http://github.com/jesseoff/cl-zyre) (rooted at /u/x/zyre)
+
+```lisp
+(ql:quickload '(:scriptl :zyre/zyredir :xcat :daemon))
+
+(defparameter zyre::*zyredir* #p"/u/x/zyre/")
+
+(defparameter uiop:*image-entry-point* (lambda ()
+  (daemon:daemonize :exit-parent t)
+  (log4cl:remove-all-appenders log4cl:*root-logger*)
+  (log:config :daily "/tmp/log.txt" :backup nil) 
+  (bt:make-thread #'zyre::zyredir :name "zyredir")
+  (xcat:xcatd :root #p"/u/x/var/ts-production/images/" :background t)
+  (bt:join-thread (scriptl:start))
+  (daemon:exit)
+))
+
+(uiop/image:dump-image #p"/tmp/xcatd" :executable t)
+```
