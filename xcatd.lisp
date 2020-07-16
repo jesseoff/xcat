@@ -60,7 +60,9 @@
   "Reads 16Mbyte chunk. Stores result in a weak hash table for cacheing. Returns a list of octet
 vectors-- first is the reply header w/checksum, next are the file buf(s)."
   (let* ((val (gethash xcat-req-string *xcatd-chunks*)))
-    (when val (return-from file-read-chunk val))
+    (when val
+      (log:debug "chunk ~a retreived from cache" xcat-req-string)
+      (return-from file-read-chunk val))
     (let* ((msg (cl-ppcre:split "@" xcat-req-string))
            (chunk (parse-integer (second msg) :junk-allowed t))
            (fn-parts (cl-ppcre:all-matches-as-strings "[^/]+" (car msg)))
@@ -84,18 +86,34 @@ vectors-- first is the reply header w/checksum, next are the file buf(s)."
       for r in *xcatd-remotes*
       for n from 0
       when (or (>= n +xcatd-max-xfrs+) (not (mismatch r *remote-host*)))
-        do (return-from xcatd-broadcast-handler nil)))
+        do (log:debug "ignoring broadcast from ~a (~a/~a connections active)"
+                      *remote-host* (length *xcatd-remotes*) +xcatd-max-xfrs+)
+           (return-from xcatd-broadcast-handler nil)))
   (log-errors
-    (let* ((resp (file-read-chunk (octets-to-string buf :external-format :utf-8)))
-           (remote *remote-host*))
-      (bt:make-thread
+   (let* ((t0 (get-internal-real-time))
+          (chunk (octets-to-string buf :external-format :utf-8))
+          (resp (file-read-chunk chunk))
+          (remote *remote-host*))
+     (log:debug "chunk ~a filled ~a bytes in ~f sec" chunk (bufs-length resp)
+                (/ (- (get-internal-real-time) t0) internal-time-units-per-second))
+     (bt:make-thread
        (lambda ()
-         (bt:with-lock-held (*xcatd-lock*) (push remote *xcatd-remotes*))
-         (log-errors (bt:with-timeout (+xcatd-xfr-timeout-sec+)
-                          (with-client-socket (sk s remote 19023 :element-type '(unsigned-byte 8))
-                            (loop for buf in resp do (write-sequence buf s))
-                            (finish-output s))))
          (bt:with-lock-held (*xcatd-lock*)
+           (push remote *xcatd-remotes*)
+           (log:debug "connecting to ~a (~a/~a) for ~a" remote (length *xcatd-remotes*)
+                      +xcatd-max-xfrs+ chunk))
+         (log-errors
+          (setf t0 (get-internal-real-time))
+          (bt:with-timeout (+xcatd-xfr-timeout-sec+)
+            (with-client-socket (sk s remote 19023 :element-type '(unsigned-byte 8))
+              (loop for buf in resp do (write-sequence buf s))
+              (finish-output s)
+              (log:debug "chunk ~a fully sent to ~a in ~f sec" chunk remote
+                         (/ (- (get-internal-real-time) t0) internal-time-units-per-second)))))
+         (bt:with-lock-held (*xcatd-lock*)
+           (log:debug "connection to ~a for ~a closed (~a/~a) ~f sec" remote chunk
+                      (length *xcatd-remotes*) +xcatd-max-xfrs+
+                      (/ (- (get-internal-real-time) t0) internal-time-units-per-second))
            (setf *xcatd-remotes* (delete remote *xcatd-remotes*
                                          :test (lambda (x y) (not (mismatch x y))))))))))
   nil)
@@ -117,7 +135,6 @@ vectors-- first is the reply header w/checksum, next are the file buf(s)."
 (defvar *xcat-lock* (bt:make-lock))
 (defparameter *xcat-broadcast-ip* "255.255.255.255")
 
-
 (defun net-read-chunk (xcat-req-string)
   "Broadcasts requests for files via XCAT. Returns cons of two octet vectors-- car is the resp
 header, cdr is the verified datablock(s)."
@@ -126,7 +143,7 @@ header, cdr is the verified datablock(s)."
                           :element-type '(unsigned-byte 8)
                           :initial-element 0))
         (nbytes-idx (+ 9 (length xcat-req-string)))
-        insk instream udp-broadcast-sk tcp-listen-sk (readlen 0))
+        insk instream udp-broadcast-sk tcp-listen-sk (readlen 0) (t0 (get-internal-real-time)))
     (declare (type fixnum readlen nbytes-idx))
     (log-but-retry-errors-after-delay
       (unwind-protect
@@ -150,7 +167,8 @@ header, cdr is the verified datablock(s)."
                            (setf insk nil)
                            (fill resp 0))
                until insk)
-
+             (log:debug "incoming connection after ~f sec"
+                        (/ (- (get-internal-real-time) t0) internal-time-units-per-second))
              (socket-close udp-broadcast-sk)
              (socket-close tcp-listen-sk)
              (setf udp-broadcast-sk nil tcp-listen-sk nil)
@@ -169,6 +187,8 @@ header, cdr is the verified datablock(s)."
                (setf insk nil)
                (unless (= readlen nbytes) (log:info readlen nbytes) (error "chunk early EOF"))
                (unless (zerop (- sum (sum-bufs bufs))) (error "bad checksum"))
+               (log:debug "got chunk ~a, took ~f sec" xcat-req-string
+                          (/ (- (get-internal-real-time) t0) internal-time-units-per-second))
                (cons resp bufs)))
         (when insk (socket-close insk))
         (when udp-broadcast-sk (socket-close udp-broadcast-sk))
