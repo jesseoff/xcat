@@ -85,7 +85,7 @@ vectors-- first is the reply header w/checksum, next are the file buf(s)."
     (loop
       for r in *xcatd-remotes*
       for n from 0
-      when (or (>= n +xcatd-max-xfrs+) (not (mismatch r *remote-host*)))
+      when (or (>= n +xcatd-max-xfrs+) (ip= r *remote-host*))
         do (log:debug "ignoring broadcast from ~a (~a/~a connections active)"
                       *remote-host* (length *xcatd-remotes*) +xcatd-max-xfrs+)
            (return-from xcatd-broadcast-handler nil)))
@@ -115,7 +115,7 @@ vectors-- first is the reply header w/checksum, next are the file buf(s)."
                       (length *xcatd-remotes*) +xcatd-max-xfrs+
                       (/ (- (get-internal-real-time) t0) internal-time-units-per-second))
            (setf *xcatd-remotes* (delete remote *xcatd-remotes*
-                                         :test (lambda (x y) (not (mismatch x y))))))))))
+                                         :test (lambda (x y) (ip= x y)))))))))
   nil)
 
 (defun xcatd (&key root background)
