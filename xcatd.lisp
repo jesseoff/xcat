@@ -64,7 +64,7 @@ vectors-- first is the reply header w/checksum, next are the file buf(s)."
       (log:debug "chunk ~a retreived from cache" xcat-req-string)
       (return-from file-read-chunk val))
     (let* ((msg (cl-ppcre:split "@" xcat-req-string))
-           (chunk (parse-integer (second msg) :junk-allowed t))
+           (chunk (parse-integer (second msg)))
            (fn-parts (cl-ppcre:all-matches-as-strings "[^/]+" (car msg)))
            (fn-dir (if (cdr fn-parts) (cons :relative (butlast fn-parts)) nil))
            (fn (make-pathname :directory fn-dir :name (car (last fn-parts))))
@@ -86,12 +86,10 @@ vectors-- first is the reply header w/checksum, next are the file buf(s)."
       for r in *xcatd-remotes*
       for n from 0
       when (or (>= n +xcatd-max-xfrs+) (ip= r *remote-host*))
-        do (log:debug "ignoring broadcast from ~a (~a/~a connections active)"
-                      *remote-host* (length *xcatd-remotes*) +xcatd-max-xfrs+)
-           (return-from xcatd-broadcast-handler nil)))
+        do (return-from xcatd-broadcast-handler nil)))
   (log-errors
    (let* ((t0 (get-internal-real-time))
-          (chunk (octets-to-string buf :external-format :utf-8))
+          (chunk (string-right-trim '(#\nul) (octets-to-string buf :external-format :utf-8)))
           (resp (file-read-chunk chunk))
           (remote *remote-host*))
      (log:debug "chunk ~a filled ~a bytes in ~f sec" chunk (bufs-length resp)
@@ -100,19 +98,19 @@ vectors-- first is the reply header w/checksum, next are the file buf(s)."
        (lambda ()
          (bt:with-lock-held (*xcatd-lock*)
            (push remote *xcatd-remotes*)
-           (log:debug "connecting to ~a (~a/~a) for ~a" remote (length *xcatd-remotes*)
-                      +xcatd-max-xfrs+ chunk))
+           (log:debug "connecting to ~a (~a/~a) for ~a" (host-to-hostname remote)
+                      (length *xcatd-remotes*) +xcatd-max-xfrs+ chunk))
          (log-errors
           (setf t0 (get-internal-real-time))
           (bt:with-timeout (+xcatd-xfr-timeout-sec+)
             (with-client-socket (sk s remote 19023 :element-type '(unsigned-byte 8))
               (loop for buf in resp do (write-sequence buf s))
               (finish-output s)
-              (log:debug "chunk ~a fully sent to ~a in ~f sec" chunk remote
+              (log:debug "chunk ~a fully sent to ~a in ~f sec" chunk (host-to-hostname remote)
                          (/ (- (get-internal-real-time) t0) internal-time-units-per-second)))))
          (bt:with-lock-held (*xcatd-lock*)
-           (log:debug "connection to ~a for ~a closed (~a/~a) ~f sec" remote chunk
-                      (length *xcatd-remotes*) +xcatd-max-xfrs+
+           (log:debug "connection to ~a for ~a closed (~a/~a) ~f sec" (host-to-hostname remote)
+                      chunk (length *xcatd-remotes*) +xcatd-max-xfrs+
                       (/ (- (get-internal-real-time) t0) internal-time-units-per-second))
            (setf *xcatd-remotes* (delete remote *xcatd-remotes*
                                          :test (lambda (x y) (ip= x y)))))))))
@@ -209,7 +207,7 @@ header, cdr is the verified datablock(s)."
     (bt:join-thread *xcat-prefetcher-thread*)
     (setf *xcat-prefetcher-thread* nil)
     (return-from xcat-req (xcat-req xcat-req-string)))
-   (let ((chunk (net-read-chunk xcat-req-string)))
+  (let ((chunk (net-read-chunk xcat-req-string)))
     (bt:with-lock-held (*xcat-lock*)
       (ensure-cached chunk)
       (setf (gethash xcat-req-string *xcat-chunks*) chunk))
@@ -232,7 +230,9 @@ header, cdr is the verified datablock(s)."
   (when (or (null *xcat-helpout-xfr-thread*)
             (not (bt:thread-alive-p *xcat-helpout-xfr-thread*)))
     (bt:with-lock-held (*xcat-lock*)
-      (let ((chunk (gethash (octets-to-string buf :external-format :utf-8) *xcat-chunks*))
+      (let ((chunk (gethash
+                    (string-right-trim '(#\nul) (octets-to-string buf :external-format :utf-8))
+                    *xcat-chunks*))
             (remote *remote-host*))
         (when chunk
           (setf *xcat-helpout-xfr-thread*
