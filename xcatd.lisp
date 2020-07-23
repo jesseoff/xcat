@@ -94,26 +94,22 @@ vectors-- first is the reply header w/checksum, next are the file buf(s)."
           (remote *remote-host*))
      (log:debug "chunk ~a filled ~a bytes in ~f sec" chunk (bufs-length resp)
                 (/ (- (get-internal-real-time) t0) internal-time-units-per-second))
+     (bt:with-lock-held (*xcatd-lock*) (push remote *xcatd-remotes*))
      (bt:make-thread
        (lambda ()
-         (bt:with-lock-held (*xcatd-lock*)
-           (push remote *xcatd-remotes*)
-           (log:debug "connecting to ~a (~a/~a) for ~a" (host-to-hostname remote)
-                      (length *xcatd-remotes*) +xcatd-max-xfrs+ chunk))
+         (log:debug "connecting to ~a (~a/~a) for ~a" (host-to-hostname remote)
+                    (length *xcatd-remotes*) +xcatd-max-xfrs+ chunk)
          (log-errors
           (setf t0 (get-internal-real-time))
           (bt:with-timeout (+xcatd-xfr-timeout-sec+)
             (with-client-socket (sk s remote 19023 :element-type '(unsigned-byte 8))
               (loop for buf in resp do (write-sequence buf s))
-              (finish-output s)
-              (log:debug "chunk ~a fully sent to ~a in ~f sec" chunk (host-to-hostname remote)
-                         (/ (- (get-internal-real-time) t0) internal-time-units-per-second)))))
+              (finish-output s))))
          (bt:with-lock-held (*xcatd-lock*)
            (log:debug "connection to ~a for ~a closed (~a/~a) ~f sec" (host-to-hostname remote)
                       chunk (length *xcatd-remotes*) +xcatd-max-xfrs+
                       (/ (- (get-internal-real-time) t0) internal-time-units-per-second))
-           (setf *xcatd-remotes* (delete remote *xcatd-remotes*
-                                         :test (lambda (x y) (ip= x y)))))))))
+           (setf *xcatd-remotes* (delete remote *xcatd-remotes* :test #'ip=)))))))
   nil)
 
 (defun xcatd (&key root background)
